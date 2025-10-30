@@ -101,7 +101,7 @@ export function SandboxProvider({ children }: { children: React.ReactNode }) {
         console.log('Waiting for sandbox to initialize...');
         let isReady = false;
         let attempts = 0;
-        const maxAttempts = 20;
+        const maxAttempts = 40;
 
         while (!isReady && attempts < maxAttempts) {
           try {
