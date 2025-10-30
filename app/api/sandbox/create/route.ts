@@ -12,8 +12,8 @@ export async function POST() {
       source: {
         type: 'git',
         url: 'https://github.com/vivek-codepalette/starter-kit-q',
-        username: 'x-access-token',
-        password: process.env.GITHUB_TOKEN || '',
+        // username: 'x-access-token',
+        // password: process.env.GITHUB_TOKEN || '',
       },
       resources: {
         vcpus: 4,
