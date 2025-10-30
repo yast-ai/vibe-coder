@@ -8,6 +8,8 @@ export async function POST(req: NextRequest) {
 
   // Start processing in the background
   (async () => {
+    let timeout: NodeJS.Timeout | null = null;
+    
     try {
       const { messages, sandboxId } = await req.json();
       
@@ -34,55 +36,99 @@ export async function POST(req: NextRequest) {
       
       console.log('🤖 [Chat API] Fetching from:', chatEndpoint);
 
-      // Fetch from the Claude Agent Server with streaming
-      const response = await fetch(chatEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ messages }),
-      });
+      // Create a timeout for the entire request (10 minutes)
+      timeout = setTimeout(() => {
+        console.error('🚨 [Chat API] Request timeout after 10 minutes');
+        writer.write(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              type: 'error',
+              message: 'Request timeout - Claude Agent Server took too long to respond',
+            })}\n\n`
+          )
+        ).catch(console.error);
+        writer.close().catch(console.error);
+      }, 10 * 60 * 1000);
 
-      if (!response.ok) {
-        throw new Error(`Claude Agent Server returned ${response.status}: ${response.statusText}`);
-      }
+      try {
+        // Fetch from the Claude Agent Server with streaming
+        const response = await fetch(chatEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ messages }),
+        });
 
-      if (!response.body) {
-        throw new Error('No response body from Claude Agent Server');
-      }
-
-      console.log('🤖 [Chat API] Streaming response from Claude Agent Server...');
-
-      // Stream the response chunk by chunk
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        
-        if (done) {
-          console.log('🤖 [Chat API] ✅ Stream complete');
-          break;
+        if (!response.ok) {
+          throw new Error(`Claude Agent Server returned ${response.status}: ${response.statusText}`);
         }
 
-        // Decode and forward the chunk immediately
-        const chunk = decoder.decode(value, { stream: true });
-        await writer.write(encoder.encode(chunk));
+        if (!response.body) {
+          throw new Error('No response body from Claude Agent Server');
+        }
+
+        console.log('🤖 [Chat API] Streaming response from Claude Agent Server...');
+
+        // Stream the response chunk by chunk
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let totalBytes = 0;
+
+        while (true) {
+          try {
+            const { done, value } = await reader.read();
+            
+            if (done) {
+              console.log('🤖 [Chat API] ✅ Stream complete (total bytes:', totalBytes, ')');
+              break;
+            }
+
+            // Decode and forward the chunk immediately
+            const chunk = decoder.decode(value, { stream: true });
+            totalBytes += value.length;
+            await writer.write(encoder.encode(chunk));
+          } catch (readError) {
+            console.error('❌ [Chat API] Error reading stream:', readError);
+            throw readError;
+          }
+        }
+      } catch (fetchError) {
+        console.error('❌ [Chat API] Fetch error:', fetchError);
+        throw fetchError;
       }
 
     } catch (error) {
       console.error('❌ [Chat API] Error:', error);
       
-      await writer.write(
-        encoder.encode(
-          `data: ${JSON.stringify({
-            type: 'error',
-            message: error instanceof Error ? error.message : 'Unknown error',
-          })}\n\n`
-        )
-      );
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : 'Unknown error';
+
+      // Format error for the client
+      const errorData = JSON.stringify({
+        type: 'error',
+        message: errorMessage,
+        code: error instanceof Error && 'code' in error ? (error as any).code : 'UNKNOWN_ERROR',
+      });
+
+      try {
+        await writer.write(encoder.encode(`data: ${errorData}\n\n`));
+      } catch (writeError) {
+        console.error('❌ [Chat API] Failed to write error to stream:', writeError);
+      }
     } finally {
-      await writer.close();
+      // Clean up timeout
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      
+      // Close the writer
+      try {
+        await writer.close();
+      } catch (closeError) {
+        console.error('❌ [Chat API] Error closing stream:', closeError);
+      }
     }
   })();
 

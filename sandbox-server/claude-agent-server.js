@@ -38,13 +38,37 @@ function log(level, ...args) {
   logStream.write(logLine);
 }
 
+// Add global error handlers to prevent process crashes
+process.on('uncaughtException', (error) => {
+  log('ERROR', '🚨 Uncaught Exception:', error.message);
+  log('ERROR', 'Stack:', error.stack);
+  // Don't exit - allow the server to continue running
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  log('ERROR', '🚨 Unhandled Rejection:', reason);
+  log('ERROR', 'Promise:', promise);
+  // Don't exit - allow the server to continue running
+});
+
+// Handle SIGTERM gracefully
+process.on('SIGTERM', () => {
+  log('INFO', '⚠️ SIGTERM received, shutting down gracefully...');
+  process.exit(0);
+});
+
 if (!ANTHROPIC_API_KEY) {
   log('ERROR', '❌ ANTHROPIC_API_KEY is not set! Claude Agent SDK will not work.');
   process.exit(1);
 }
 
 // Change to the working directory
-process.chdir(WORKING_DIR);
+try {
+  process.chdir(WORKING_DIR);
+} catch (err) {
+  log('ERROR', '❌ Failed to change to working directory:', err.message);
+  process.exit(1);
+}
 
 log('INFO', '✅ Claude Agent Server starting...');
 log('INFO', '✅ ANTHROPIC_API_KEY is set');
@@ -154,6 +178,18 @@ app.post('/chat', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
+  // Create a timeout for the entire request (e.g., 5 minutes)
+  const requestTimeoutId = setTimeout(() => {
+    log('WARN', '⚠️ [Claude Agent] Request timeout after 5 minutes');
+    if (!res.headersSent) {
+      res.write(`data: ${JSON.stringify({ 
+        type: 'error', 
+        message: 'Request timeout - processing took too long' 
+      })}\n\n`);
+    }
+    res.end();
+  }, 5 * 60 * 1000); // 5 minutes
+
   try {
     const systemPrompt = `You are an expert full-stack developer assistant with DIRECT access to the filesystem.
 You are running INSIDE the sandbox environment at /vercel/sandbox.
@@ -219,78 +255,149 @@ The dev server is already running on port 3000.
 
 REMEMBER: ALWAYS USE ABSOLUTE PATHS STARTING WITH /vercel/sandbox/`;
 
+    log('INFO', '🤖 [Claude Agent] Initializing query with built-in tools');
+
     // Run Claude Agent SDK query with built-in tools
-    const agentQuery = query({
-      prompt: promptText,
-      options: {
-        systemPrompt,
-        model: 'claude-haiku-4-5-20251001',
-        apiKey: ANTHROPIC_API_KEY,
-        maxTurns: 15,
-        permissionMode: 'bypassPermissions',
-      },
-    });
-
-    log('INFO', '🤖 [Claude Agent] Query initialized with built-in tools');
-
-    // Stream the response
-    for await (const event of agentQuery) {
-      if (event.type === 'assistant') {
-        const message = event.message;
-        
-        if (message.content) {
-          for (const block of message.content) {
-            if (block.type === 'text') {
-              const data = JSON.stringify({
-                type: 'text',
-                content: block.text,
-              });
-              res.write(`data: ${data}\n\n`);
-            } else if (block.type === 'tool_use') {
-              log('INFO', '🔧 [Claude Agent] Using tool:', block.name);
-              log('INFO', '🔧 [Claude Agent] Tool input:', JSON.stringify(block.input, null, 2));
-              
-              const data = JSON.stringify({
-                type: 'tool',
-                tool: block.name,
-                input: block.input,
-              });
-              res.write(`data: ${data}\n\n`);
-            }
-          }
-        }
-      } else if (event.type === 'tool_result') {
-        // Log tool results for debugging
-        log('INFO', '✅ [Claude Agent] Tool result:', JSON.stringify(event.result));
-        if (event.result.isError) {
-          log('ERROR', '❌ [Claude Agent] Tool error:', event.result.content);
-        }
-      } else if (event.type === 'result') {
-        log('INFO', '🤖 [Claude Agent] Result - turns:', event.num_turns, 'cost:', event.total_cost_usd);
-      }
+    // Wrap in try-catch to handle any SDK errors
+    let agentQuery;
+    try {
+      agentQuery = query({
+        prompt: promptText,
+        options: {
+          systemPrompt,
+          model: 'claude-haiku-4-5-20251001',
+          apiKey: ANTHROPIC_API_KEY,
+          maxTurns: 15,
+          permissionMode: 'bypassPermissions',
+        },
+      });
+    } catch (error) {
+      log('ERROR', '❌ [Claude Agent] Failed to initialize query:', error.message);
+      throw error;
     }
 
-    log('INFO', '🤖 [Claude Agent] ✅ Response complete');
+    log('INFO', '🤖 [Claude Agent] Query initialized, streaming events');
+
+    let eventCount = 0;
+    let hasError = false;
+
+    try {
+      // Stream the response
+      for await (const event of agentQuery) {
+        eventCount++;
+        
+        try {
+          if (event.type === 'assistant') {
+            const message = event.message;
+            
+            if (message.content) {
+              for (const block of message.content) {
+                if (block.type === 'text') {
+                  const data = JSON.stringify({
+                    type: 'text',
+                    content: block.text,
+                  });
+                  res.write(`data: ${data}\n\n`);
+                } else if (block.type === 'tool_use') {
+                  log('INFO', '🔧 [Claude Agent] Using tool:', block.name);
+                  log('INFO', '🔧 [Claude Agent] Tool input:', JSON.stringify(block.input, null, 2));
+                  
+                  const data = JSON.stringify({
+                    type: 'tool',
+                    tool: block.name,
+                    input: block.input,
+                  });
+                  res.write(`data: ${data}\n\n`);
+                }
+              }
+            }
+          } else if (event.type === 'tool_result') {
+            // Log tool results for debugging
+            log('INFO', '✅ [Claude Agent] Tool result:', JSON.stringify(event.result));
+            if (event.result.isError) {
+              log('ERROR', '❌ [Claude Agent] Tool error:', event.result.content);
+            }
+          } else if (event.type === 'result') {
+            log('INFO', '🤖 [Claude Agent] Result - turns:', event.num_turns, 'cost:', event.total_cost_usd);
+          }
+        } catch (eventError) {
+          log('ERROR', '❌ [Claude Agent] Error processing event:', eventError.message);
+          hasError = true;
+          break;
+        }
+      }
+    } catch (streamError) {
+      log('ERROR', '❌ [Claude Agent] Error in event stream:', streamError.message);
+      log('ERROR', '❌ [Claude Agent] Stack trace:', streamError.stack);
+      hasError = true;
+    }
+
+    log('INFO', '🤖 [Claude Agent] Stream processing complete (events: ' + eventCount + ', hasError: ' + hasError + ')');
 
     // Send completion event
-    res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+    if (!hasError) {
+      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+    }
     res.end();
   } catch (error) {
     log('ERROR', '❌ [Claude Agent] Error:', error.message || error);
+    log('ERROR', '❌ [Claude Agent] Stack:', error instanceof Error ? error.stack : 'No stack trace');
     
-    const errorData = JSON.stringify({
-      type: 'error',
-      message: error instanceof Error ? error.message : 'Unknown error',
-    });
-    res.write(`data: ${errorData}\n\n`);
+    if (!res.headersSent) {
+      const errorData = JSON.stringify({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+      res.write(`data: ${errorData}\n\n`);
+    }
+    
     res.end();
+  } finally {
+    clearTimeout(requestTimeoutId);
+  }
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
+// Error handler middleware
+app.use((err, req, res, next) => {
+  log('ERROR', '🚨 Express error:', err.message);
+  log('ERROR', 'Stack:', err.stack);
+  
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // Start the server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   log('INFO', `✅ Claude Agent Server running on port ${PORT}`);
   log('INFO', `✅ Ready to receive chat requests`);
   log('INFO', `✅ Logs available at http://localhost:${PORT}/logs`);
+});
+
+// Handle server errors
+server.on('error', (error) => {
+  log('ERROR', '🚨 Server error:', error.message);
+  log('ERROR', 'Stack:', error.stack);
+  // Try to restart or at least log the error without crashing
+});
+
+// Graceful shutdown handler
+process.on('SIGINT', () => {
+  log('INFO', '⚠️ SIGINT received, shutting down gracefully...');
+  server.close(() => {
+    log('INFO', '✅ Server closed');
+    process.exit(0);
+  });
+  
+  // Force shutdown after 10 seconds
+  setTimeout(() => {
+    log('ERROR', '❌ Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
 });
 

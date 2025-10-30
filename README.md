@@ -16,7 +16,18 @@ A fully functional, browser-based code editor with WebContainer API integration,
 - 🌙 **Dark Theme** - Professional dark color scheme
 - ✨ **Smooth Animations** - Polished transitions and interactions
 
-### Vercel Sadnbox
+### Vercel Sandbox
+
+## 📋 Recent Updates
+
+### ✅ Fixed: Claude Agent Process Crash (Exit Code 1)
+The critical issue where the Claude Agent process was crashing in Vercel deployments has been fixed. For detailed information:
+
+- **Quick Fix Summary**: See [`IMPLEMENTATION_SUMMARY.md`](./IMPLEMENTATION_SUMMARY.md)
+- **Detailed Explanation**: See [`FIX_CLAUDE_CRASH.md`](./FIX_CLAUDE_CRASH.md)
+- **Troubleshooting Guide**: See [`DEBUGGING_GUIDE.md`](./DEBUGGING_GUIDE.md)
+- **Deployment Steps**: See [`DEPLOYMENT_CHECKLIST.md`](./DEPLOYMENT_CHECKLIST.md)
+- **Release Notes**: See [`CHANGELOG.md`](./CHANGELOG.md)
 
 ## 🚀 Getting Started
 
@@ -60,29 +71,37 @@ Open [http://localhost:3000](http://localhost:3000) to see the result.
 - **Language**: TypeScript
 - **Styling**: Tailwind CSS v4
 - **Fonts**: Geist Sans & Geist Mono
-- **Runtime**: WebContainer API
+- **Runtime**: WebContainer API / Vercel Sandbox
 - **Terminal**: xterm.js + FitAddon
 - **Dev Server**: Vite
 - **UI Framework**: React 19
+- **AI**: Claude Agent SDK (with comprehensive error handling)
 
 ## 📁 Project Structure
 
 ```
 app/
+├── api/
+│   ├── chat/                    # Chat endpoint with error handling
+│   └── sandbox/                 # Sandbox management endpoints
 ├── components/
-│   ├── Chat.tsx           # Chat interface
-│   ├── Workbench.tsx      # Code workbench with tabs
-│   ├── FileTree.tsx       # Real file navigation
-│   ├── CodeEditor.tsx     # Live code editor
-│   ├── Terminal.tsx       # xterm.js terminal
-│   └── ResizablePanel.tsx # Layout manager
+│   ├── Chat.tsx                 # Chat interface (enhanced error handling)
+│   ├── Workbench.tsx            # Code workbench with tabs
+│   ├── FileTree.tsx             # Real file navigation
+│   ├── CodeEditor.tsx           # Live code editor
+│   ├── Terminal.tsx             # xterm.js terminal
+│   └── ResizablePanel.tsx       # Layout manager
 ├── context/
-│   └── WebContainerContext.tsx # WebContainer state management
+│   └── SandboxContext.tsx       # Sandbox state management
 ├── lib/
-│   └── webcontainer.ts    # WebContainer utilities & Vite config
-├── page.tsx               # Main page (dynamic imports)
-├── layout.tsx             # Root layout
-└── globals.css            # Global styles + xterm theme
+│   ├── sandbox-manager.ts       # Sandbox utilities
+│   └── utils.ts                 # Helper functions
+├── page.tsx                     # Main page (dynamic imports)
+├── layout.tsx                   # Root layout
+└── globals.css                  # Global styles + xterm theme
+
+sandbox-server/
+└── claude-agent-server.js       # Claude Agent Server with error handling
 ```
 
 ## 🎨 Color Scheme
@@ -101,6 +120,7 @@ app/
 - File changes trigger HMR automatically
 - Terminal provides full shell access (`jsh`)
 - Optimized for developer workflows
+- **Claude Agent SDK** integrated with comprehensive error handling
 
 ## ⚠️ Browser Requirements
 
@@ -128,6 +148,23 @@ app/
 ✅ **File Tree Auto-Refresh** - Picks up terminal changes automatically  
 ✅ **Hot Reload** - Instant preview updates on file save  
 ✅ **Optimized Loading** - Clear feedback during boot/install  
+✅ **Error Handling** - Comprehensive error handling with helpful messages  
+
+## 🐛 Troubleshooting
+
+If you encounter issues:
+
+1. **Check the Logs Panel** - View real-time logs from the Claude Agent Server
+2. **See [`DEBUGGING_GUIDE.md`](./DEBUGGING_GUIDE.md)** - Comprehensive troubleshooting guide
+3. **Review [`FIX_CLAUDE_CRASH.md`](./FIX_CLAUDE_CRASH.md)** - Details about the crash fix
+
+## 📚 Documentation
+
+- [`IMPLEMENTATION_SUMMARY.md`](./IMPLEMENTATION_SUMMARY.md) - Overview of all fixes
+- [`FIX_CLAUDE_CRASH.md`](./FIX_CLAUDE_CRASH.md) - Detailed fix explanation
+- [`DEBUGGING_GUIDE.md`](./DEBUGGING_GUIDE.md) - Troubleshooting and debugging
+- [`DEPLOYMENT_CHECKLIST.md`](./DEPLOYMENT_CHECKLIST.md) - Deployment steps
+- [`CHANGELOG.md`](./CHANGELOG.md) - Release notes
 
 ## 🙏 Credits
 
@@ -139,4 +176,4 @@ MIT
 
 ---
 
-Built with Next.js and Tailwind CSS 🚀
+Built with Next.js, Tailwind CSS, and Claude Agent SDK 🚀

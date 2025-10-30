@@ -48,76 +48,150 @@ export default function Chat() {
 
       abortControllerRef.current = new AbortController();
 
-      // Stream response from API
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: newMessages.map(msg => ({
-            role: msg.role,
-            content: msg.content,
-          })),
-          sandboxId: sandbox.id,
-        }),
-        signal: abortControllerRef.current.signal,
-      });
+      // Create a timeout for the entire request (10 minutes)
+      const timeoutId = setTimeout(() => {
+        console.error('🚨 Chat request timeout after 10 minutes');
+        abortControllerRef.current?.abort();
+      }, 10 * 60 * 1000);
 
-      if (!response.ok) {
-        throw new Error(`API error: ${response.statusText}`);
-      }
+      try {
+        // Stream response from API
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messages: newMessages.map(msg => ({
+              role: msg.role,
+              content: msg.content,
+            })),
+            sandboxId: sandbox.id,
+          }),
+          signal: abortControllerRef.current.signal,
+        });
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let assistantMessage = '';
-      let toolsUsed: { tool: string; input: any }[] = [];
+        if (!response.ok) {
+          clearTimeout(timeoutId);
+          throw new Error(`API error: ${response.status} ${response.statusText}`);
+        }
 
-      if (reader) {
+        const reader = response.body?.getReader();
+        if (!reader) {
+          clearTimeout(timeoutId);
+          throw new Error('No response body from server');
+        }
+
+        const decoder = new TextDecoder();
+        let assistantMessage = '';
+        let toolsUsed: { tool: string; input: any }[] = [];
+        let lastEventTime = Date.now();
+        let eventStreamTimeout: NodeJS.Timeout | null = null;
+
+        // Monitor for stuck event streams
+        const startStreamTimeout = () => {
+          if (eventStreamTimeout) clearTimeout(eventStreamTimeout);
+          eventStreamTimeout = setTimeout(() => {
+            console.warn('⚠️ No events received for 30 seconds, continuing to wait...');
+            startStreamTimeout(); // Keep monitoring
+          }, 30000);
+        };
+        
+        startStreamTimeout();
+
         while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+          try {
+            const { done, value } = await reader.read();
+            lastEventTime = Date.now();
+            
+            if (done) {
+              if (eventStreamTimeout) clearTimeout(eventStreamTimeout);
+              clearTimeout(timeoutId);
+              break;
+            }
 
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
 
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = JSON.parse(line.slice(6));
+            for (const line of lines) {
+              if (line.trim() === '') continue;
+              
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6));
 
-              if (data.type === 'text') {
-                assistantMessage += data.content;
-                setCurrentResponse(assistantMessage);
-              } else if (data.type === 'tool') {
-                toolsUsed.push({ tool: data.tool, input: data.input });
-                console.log('🔧 Tool used:', data.tool, data.input);
-              } else if (data.type === 'tool_result') {
-                console.log('✅ Tool result:', data.content);
-              } else if (data.type === 'done') {
-                // Finalize the message
-                setMessages(prev => [...prev, {
-                  role: 'assistant',
-                  content: assistantMessage || 'Done!',
-                  toolUse: toolsUsed.length > 0 ? toolsUsed : undefined,
-                }]);
-                setCurrentResponse('');
-              } else if (data.type === 'error') {
-                throw new Error(data.message);
+                  if (data.type === 'text') {
+                    assistantMessage += data.content;
+                    setCurrentResponse(assistantMessage);
+                  } else if (data.type === 'tool') {
+                    toolsUsed.push({ tool: data.tool, input: data.input });
+                    console.log('🔧 Tool used:', data.tool, data.input);
+                  } else if (data.type === 'tool_result') {
+                    console.log('✅ Tool result:', data.content);
+                  } else if (data.type === 'done') {
+                    if (eventStreamTimeout) clearTimeout(eventStreamTimeout);
+                    clearTimeout(timeoutId);
+                    // Finalize the message
+                    setMessages(prev => [...prev, {
+                      role: 'assistant',
+                      content: assistantMessage || 'Done!',
+                      toolUse: toolsUsed.length > 0 ? toolsUsed : undefined,
+                    }]);
+                    setCurrentResponse('');
+                  } else if (data.type === 'error') {
+                    if (eventStreamTimeout) clearTimeout(eventStreamTimeout);
+                    clearTimeout(timeoutId);
+                    throw new Error(data.message || 'Unknown error from Claude Agent');
+                  }
+                } catch (parseError) {
+                  if (parseError instanceof SyntaxError) {
+                    console.warn('Failed to parse event data:', line);
+                  } else {
+                    throw parseError;
+                  }
+                }
               }
             }
+          } catch (readError) {
+            if (readError instanceof Error) {
+              if (readError.name === 'AbortError') {
+                if (eventStreamTimeout) clearTimeout(eventStreamTimeout);
+                clearTimeout(timeoutId);
+                console.log('Request cancelled');
+                return;
+              }
+            }
+            throw readError;
           }
         }
+      } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         console.log('Request cancelled');
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: 'Request was cancelled. Please try again.',
+        }]);
         return;
       }
 
+      const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('Chat error:', error);
+      
+      // Provide more detailed error message
+      let displayError = errorMessage;
+      if (displayError.includes('Failed to fetch')) {
+        displayError = 'Connection error: Could not reach the server. The Claude Agent Server may be crashed or unreachable.';
+      } else if (displayError.includes('API error')) {
+        displayError = `Server error: ${displayError}. The Claude Agent process may have crashed. Check the Logs panel for details.`;
+      }
+      
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`,
+        content: `❌ Error: ${displayError}\n\nTips:\n- Check the Logs panel for detailed error information\n- Try refreshing the page if the server is unresponsive\n- Make sure your API key is valid`,
       }]);
     } finally {
       setIsLoading(false);
